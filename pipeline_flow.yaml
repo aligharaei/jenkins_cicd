@@ -1,0 +1,92 @@
+
+# 1) The docker compose file to initiate the jenkins on the server
+version: '3.9'
+
+services:
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins
+    restart: unless-stopped
+    ports:
+      
+"8085:8085" # Jenkins UI port
+"50085:50085" # Jenkins agent port
+environment:
+  JENKINS_OPTS: --httpPort=8085
+volumes:
+jenkins_home:/var/jenkins_home 
+/var/run/docker.sock:/var/run/docker.sock
+/usr/local/bin/docker:/usr/bin/docker
+./init.groovy.d:/var/jenkins_home/init.groovy.d
+networks:
+gitlab
+
+networks:
+  gitlab:
+
+volumes:
+  jenkins_home:
+    driver: local
+
+# 2) Run the 'docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword' command to get the admin initial password
+
+# 3) Required plugins
+- Git Plugin
+- Gitlab
+- SSH Agent Plugin
+- Credentials Binding Plugin
+- Pipeline
+
+# 4) create accesstoken Gitlab server -> profile -> access token -> create
+
+# 5) Jenkins -> manage jenkins -> credentioal -> global -> add new credential -> type: gitlab user and password (user: ${gitlab_user}, password: ${gitlab_password}) 
+
+# 6) create ssh tunnel
+Run the commands: 
+- ssh-keygen -t rsa -b 4096 -C "your_email@example.com" # create private and public key
+- ssh-copy-id -i ~/.ssh/id_rsa.pub your_ssh_user@production_server # copy that to the server
+- ssh your_ssh_user@production_server # ssh to production server
+- ls -ld ${DEVELOPMENT_PROJECT_PATH} # test 
+
+# 7) Create pipeline
+# 7-1) on jenkins server New item -> Pipeline ->
+- Definition: pipeline script from SCM  
+- SCM: git
+- Repository: ${git_repository_url}
+- Credential: ${select_created_credential_in_step_5}
+- Branch: Develop
+- Build target: check the 'Build when a change is pushed to GitLab. GitLab webhook URL:http://exmaple/project/app' #@{$webhook_address}
+- Save
+
+# 8) Set webhook to trigger the push event(based on the CICD scenario):
+# 8-1) Go to Jenkins server -> Profile -> configure -> Api/Token -> create token
+# 8-2) set JenkinsUser:$created_Jenkins_Token_on_step_8-1@{$webhook_address} into development gitlab -> repository project -> setting -> webhook
+
+# 9) Create Pipeline in Jenkinsfile.txt and put in the root path of the project
+- example:
+
+pipeline {
+    agent any
+    stages {
+        stage('Clone repository') {
+            steps {
+                git branch: 'develop', url: '${GIT_URL}', credentialsId: '${CREDENTIAL_NAME)'
+            }
+        }
+        stage('Deploy to Server via Rsync') {
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'ssh-credentials', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    sh '''
+                    rsync -avz --no-perms --no-owner --no-group --no-times -e "ssh -i ${SSH_KEY}" ./ ${SSH_USER}@${PRODUCTION_SSH_IP}:${PRODUCTION_PROJECT_PATH}                    '''
+                    sh '''
+                    ssh -i ${SSH_KEY} ${SSH_USER}@${PRODUCTION_SSH_IP} 'cd ${DEVELOPMENT_PROJECT_PATH} && composer install --no-interaction --prefer-dist --optimize-autoloader'
+                    '''
+                    sh '''
+                    ssh -i ${SSH_KEY} ${SSH_USER}@${PRODUCTION_SSH_IP} 'cd ${DEVELOPMENT_PROJECT_PATH} && php artisan cache:clear'
+                    '''
+                }
+            }
+        }
+    }
+}
+
